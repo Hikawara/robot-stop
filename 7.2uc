@@ -1,68 +1,89 @@
+
 #!/usr/bin/env python3
+
 import rospy
-from duckietown_msgs.msg import Twist2DStamped, AprilTagDetectionArray
+from duckietown_msgs.msg import Twist2DStamped
+from duckietown_msgs.msg import FSMState
+from duckietown_msgs.msg import AprilTagDetectionArray
 import time
 
-class LaneWithTagPause:
-
+class Autopilot:
     def __init__(self):
-        rospy.init_node('lane_with_tag_pause_node', anonymous=True)
-        rospy.on_shutdown(self.clean_shutdown)
-
-        self.cmd_vel_pub = rospy.Publisher('/birdie/car_cmd_switch_node/cmd', Twist2DStamped, queue_size=1)
-        rospy.Subscriber('/birdie/apriltag_detector_node/detections', AprilTagDetectionArray, self.tag_callback, queue_size=1)
         
-        # Parameters
-        self.pause_duration = 3.0  # seconds to stop when tag detected
-        self.last_pause_time = 0.0
-        self.cooldown = 5.0  # seconds before responding to another tag
+        #Initialize ROS node
+        rospy.init_node('autopilot_node', anonymous=True)
 
-        self.tag_detected = False
-        self.last_tag_seen_time = 0.0
+        self.robot_state = "LANE_FOLLOWING"
 
-        self.rate = rospy.Rate(10)  # 10 Hz main loop
-        self.run()
+        # When shutdown signal is received, we run clean_shutdown function
+        rospy.on_shutdown(self.clean_shutdown)
+        
+        ###### Init Pub/Subs. REMEMBER TO REPLACE "akandb" WITH YOUR ROBOT'S NAME #####
+        self.cmd_vel_pub = rospy.Publisher('/akandb/car_cmd_switch_node/cmd', Twist2DStamped, queue_size=1)
+        self.state_pub = rospy.Publisher('/akandb/fsm_node/mode', FSMState, queue_size=1)
+        rospy.Subscriber('/akandb/apriltag_detector_node/detections', AprilTagDetectionArray, self.tag_callback, queue_size=1)
+        ################################################################
 
+        rospy.spin() # Spin forever but listen to message callbacks
+
+        self.last_stop_time = 0
+        self.cooldown_duration = 5.0  # Seconds between stops
+        self.stop_duration = 3.0
+
+
+    
+    
+    # Apriltag Detection Callback
     def tag_callback(self, msg):
-        if len(msg.detections) > 0:
-            self.tag_detected = True
-            self.last_tag_seen_time = time.time()
-
+        if self.robot_state != "LANE_FOLLOWING":
+            return
+        
+        self.move_robot(msg.detections)
+ 
+    # Stop Robot before node has shut down. This ensures the robot keep moving with the latest velocity command
     def clean_shutdown(self):
-        rospy.loginfo("Shutting down. Stopping robot...")
+        rospy.loginfo("System shutting down. Stopping robot...")
         self.stop_robot()
 
+    # Sends zero velocity to stop the robot
     def stop_robot(self):
-        cmd = Twist2DStamped()
-        cmd.header.stamp = rospy.Time.now()
-        cmd.v = 0.0
-        cmd.omega = 0.0
-        self.cmd_vel_pub.publish(cmd)
+        cmd_msg = Twist2DStamped()
+        cmd_msg.header.stamp = rospy.Time.now()
+        cmd_msg.v = 0.0
+        cmd_msg.omega = 0.0
+        self.cmd_vel_pub.publish(cmd_msg)
 
-    def lane_following_control(self):
-        # Replace this with your actual lane following logic
-        cmd = Twist2DStamped()
-        cmd.header.stamp = rospy.Time.now()
-        cmd.v = 0.2  # Example forward speed
-        cmd.omega = 0.0  # Assume straight for simplicity
-        self.cmd_vel_pub.publish(cmd)
+    def set_state(self, state):
+        self.robot_state = state
+        state_msg = FSMState()
+        state_msg.header.stamp = rospy.Time.now()
+        state_msg.state = self.robot_state
+        self.state_pub.publish(state_msg)
 
-    def run(self):
-        while not rospy.is_shutdown():
-            current_time = time.time()
-            if self.tag_detected and (current_time - self.last_pause_time) > self.cooldown:
-                rospy.loginfo("AprilTag detected! Stopping for %.1f seconds...", self.pause_duration)
-                self.stop_robot()
-                rospy.sleep(self.pause_duration)
-                self.last_pause_time = time.time()
-                self.tag_detected = False
-            else:
-                self.lane_following_control()
-            self.rate.sleep()
+    def move_robot(self, detections):
+        if len(detections) == 0:
+            return
 
+        current_time = time.time()
+        time_since_last_stop = current_time - self.last_stop_time
+
+        if time_since_last_stop < self.cooldown_duration:
+            # Still in cooldown, ignore tag
+            return
+
+        rospy.loginfo("Stop sign detected. Stopping robot for %.1f seconds.", self.stop_duration)
+
+        # Stop the robot
+        self.set_state("NORMAL_JOYSTICK_CONTROL")  # Stops lane following
+        self.stop_robot()
+        rospy.sleep(self.stop_duration)
+
+        # Resume lane following
+        self.set_state("LANE_FOLLOWING")
+        self.last_stop_time = time.time()
 
 if __name__ == '__main__':
     try:
-        LaneWithTagPause()
+        autopilot_instance = Autopilot()
     except rospy.ROSInterruptException:
         pass
