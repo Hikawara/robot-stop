@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+import rospy
+from duckietown_msgs.msg import Twist2DStamped, AprilTagDetectionArray
+import time
+
+class LaneWithTagPause:
+
+    def __init__(self):
+        rospy.init_node('lane_with_tag_pause_node', anonymous=True)
+        rospy.on_shutdown(self.clean_shutdown)
+
+        self.cmd_vel_pub = rospy.Publisher('/birdie/car_cmd_switch_node/cmd', Twist2DStamped, queue_size=1)
+        rospy.Subscriber('/birdie/apriltag_detector_node/detections', AprilTagDetectionArray, self.tag_callback, queue_size=1)
+        
+        # Parameters
+        self.pause_duration = 3.0  # seconds to stop when tag detected
+        self.last_pause_time = 0.0
+        self.cooldown = 5.0  # seconds before responding to another tag
+
+        self.tag_detected = False
+        self.last_tag_seen_time = 0.0
+
+        self.rate = rospy.Rate(10)  # 10 Hz main loop
+        self.run()
+
+    def tag_callback(self, msg):
+        if len(msg.detections) > 0:
+            self.tag_detected = True
+            self.last_tag_seen_time = time.time()
+
+    def clean_shutdown(self):
+        rospy.loginfo("Shutting down. Stopping robot...")
+        self.stop_robot()
+
+    def stop_robot(self):
+        cmd = Twist2DStamped()
+        cmd.header.stamp = rospy.Time.now()
+        cmd.v = 0.0
+        cmd.omega = 0.0
+        self.cmd_vel_pub.publish(cmd)
+
+    def lane_following_control(self):
+        # Replace this with your actual lane following logic
+        cmd = Twist2DStamped()
+        cmd.header.stamp = rospy.Time.now()
+        cmd.v = 0.2  # Example forward speed
+        cmd.omega = 0.0  # Assume straight for simplicity
+        self.cmd_vel_pub.publish(cmd)
+
+    def run(self):
+        while not rospy.is_shutdown():
+            current_time = time.time()
+            if self.tag_detected and (current_time - self.last_pause_time) > self.cooldown:
+                rospy.loginfo("AprilTag detected! Stopping for %.1f seconds...", self.pause_duration)
+                self.stop_robot()
+                rospy.sleep(self.pause_duration)
+                self.last_pause_time = time.time()
+                self.tag_detected = False
+            else:
+                self.lane_following_control()
+            self.rate.sleep()
+
+
+if __name__ == '__main__':
+    try:
+        LaneWithTagPause()
+    except rospy.ROSInterruptException:
+        pass
